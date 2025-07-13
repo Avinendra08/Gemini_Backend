@@ -4,7 +4,7 @@ import { handleStripeWebhook, testWebhook } from '../controllers/webhookControll
 const router = express.Router();
 
 // Webhook routes (no authentication required)
-router.post('/stripe', express.raw({ type: 'application/json' }), handleStripeWebhook);
+router.post('/stripe', handleStripeWebhook);
 router.get('/test', testWebhook);
 
-export default router; 
+export default router;
