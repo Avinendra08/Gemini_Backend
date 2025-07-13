@@ -37,6 +37,8 @@ export const createCustomer = async (userId, email, name) => {
 // Create checkout session for Pro subscription
 export const createCheckoutSession = async (userId, successUrl, cancelUrl) => {
   try {
+    console.log('Creating checkout session for user:', userId);
+    
     // Get user details
     const userResult = await query(
       'SELECT * FROM users WHERE id = $1',
@@ -48,14 +50,23 @@ export const createCheckoutSession = async (userId, successUrl, cancelUrl) => {
     }
 
     const user = userResult.rows[0];
+    console.log('Found user:', { id: user.id, hasStripeCustomer: !!user.stripe_customer_id });
 
     // Create or get Stripe customer
     let customer;
     if (user.stripe_customer_id) {
+      console.log('Retrieving existing Stripe customer:', user.stripe_customer_id);
       customer = await stripe.customers.retrieve(user.stripe_customer_id);
     } else {
+      console.log('Creating new Stripe customer for user:', user.id);
       customer = await createCustomer(userId, user.email, user.name);
     }
+
+    console.log('Creating Stripe checkout session with params:', {
+      customerId: customer.id,
+      priceId: process.env.STRIPE_PRICE_ID,
+      userId: userId
+    });
 
     // Create checkout session with Indian export compliance
     const session = await stripe.checkout.sessions.create({
@@ -85,9 +96,19 @@ export const createCheckoutSession = async (userId, successUrl, cancelUrl) => {
       }
     });
 
+    console.log('Checkout session created successfully:', {
+      sessionId: session.id,
+      userId: userId,
+      customerId: customer.id
+    });
+
     return session;
   } catch (error) {
-    console.error('Error creating checkout session:', error);
+    console.error('Error creating checkout session:', {
+      userId,
+      error: error.message,
+      stack: error.stack
+    });
     throw new Error('Failed to create checkout session');
   }
 };
@@ -125,41 +146,110 @@ export const handleWebhook = async (event) => {
 
 // Handle checkout session completed
 const handleCheckoutCompleted = async (session) => {
-  const userId = parseInt(session.metadata.user_id);
-  
-  // Update user subscription status
-  await query(
-    `UPDATE users 
-     SET subscription_tier = 'pro', 
-         stripe_subscription_id = $1,
-         updated_at = CURRENT_TIMESTAMP 
-     WHERE id = $2`,
-    [session.subscription, userId]
-  );
+  try {
+    console.log('Processing completed checkout session:', {
+      sessionId: session.id,
+      subscription: session.subscription,
+      customerId: session.customer,
+      metadata: session.metadata
+    });
 
-  console.log(`User ${userId} subscription activated`);
+    const userId = parseInt(session.metadata.user_id);
+    
+    // Verify the subscription exists in Stripe
+    const subscription = await stripe.subscriptions.retrieve(session.subscription);
+    console.log('Retrieved subscription from Stripe:', {
+      status: subscription.status,
+      customerId: subscription.customer,
+      subscriptionId: subscription.id
+    });
+    
+    // Update user subscription status
+    await query(
+      `UPDATE users 
+       SET subscription_tier = 'pro', 
+           stripe_subscription_id = $1,
+           updated_at = CURRENT_TIMESTAMP 
+       WHERE id = $2
+       RETURNING id, subscription_tier, stripe_subscription_id`,
+      [session.subscription, userId]
+    ).then(result => {
+      console.log('Updated user subscription:', {
+        userId,
+        updatedRows: result.rows,
+        newSubscriptionId: session.subscription
+      });
+    });
+
+    // Verify subscription record exists
+    const subscriptionRecord = await query(
+      'SELECT * FROM subscriptions WHERE stripe_subscription_id = $1',
+      [session.subscription]
+    );
+
+    if (subscriptionRecord.rows.length === 0) {
+      console.log('Creating missing subscription record');
+      // Create subscription record if it doesn't exist
+      await handleSubscriptionCreated(subscription);
+    }
+
+    console.log(`User ${userId} subscription activated successfully`);
+  } catch (error) {
+    console.error('Error in handleCheckoutCompleted:', {
+      sessionId: session.id,
+      error: error.message,
+      stack: error.stack
+    });
+    throw error;
+  }
 };
 
 // Handle subscription created
 const handleSubscriptionCreated = async (subscription) => {
-  const customer = await stripe.customers.retrieve(subscription.customer);
-  const userId = parseInt(customer.metadata.user_id);
+  try {
+    console.log('Processing new subscription:', {
+      subscriptionId: subscription.id,
+      customerId: subscription.customer,
+      status: subscription.status
+    });
 
-  // Insert subscription record
-  await query(
-    `INSERT INTO subscriptions 
-     (user_id, stripe_subscription_id, stripe_customer_id, status, 
-      current_period_start, current_period_end) 
-     VALUES ($1, $2, $3, $4, $5, $6)`,
-    [
-      userId,
-      subscription.id,
-      subscription.customer,
-      subscription.status,
-      new Date(subscription.current_period_start * 1000),
-      new Date(subscription.current_period_end * 1000)
-    ]
-  );
+    const customer = await stripe.customers.retrieve(subscription.customer);
+    const userId = parseInt(customer.metadata.user_id);
+
+    console.log('Retrieved customer details:', {
+      customerId: customer.id,
+      userId: userId
+    });
+
+    // Insert subscription record
+    const result = await query(
+      `INSERT INTO subscriptions 
+       (user_id, stripe_subscription_id, stripe_customer_id, status, 
+        current_period_start, current_period_end) 
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING *`,
+      [
+        userId,
+        subscription.id,
+        subscription.customer,
+        subscription.status,
+        new Date(subscription.current_period_start * 1000),
+        new Date(subscription.current_period_end * 1000)
+      ]
+    );
+
+    console.log('Subscription record created:', {
+      subscriptionRecord: result.rows[0],
+      userId: userId
+    });
+  } catch (error) {
+    console.error('Error in handleSubscriptionCreated:', {
+      subscriptionId: subscription.id,
+      error: error.message,
+      stack: error.stack
+    });
+    throw error;
+  }
 };
 
 // Handle subscription updated
@@ -224,8 +314,11 @@ const handlePaymentFailed = async (invoice) => {
 // Get subscription status
 export const getSubscriptionStatus = async (userId) => {
   const result = await query(
-    `SELECT subscription_tier, stripe_subscription_id 
-     FROM users WHERE id = $1`,
+    `SELECT u.subscription_tier, u.stripe_subscription_id, u.stripe_customer_id,
+            s.status as sub_status, s.current_period_end
+     FROM users u
+     LEFT JOIN subscriptions s ON s.user_id = u.id
+     WHERE u.id = $1`,
     [userId]
   );
 
@@ -235,26 +328,53 @@ export const getSubscriptionStatus = async (userId) => {
 
   const user = result.rows[0];
   
+  // If user has a subscription ID, verify with Stripe
   if (user.stripe_subscription_id) {
     try {
       const subscription = await stripe.subscriptions.retrieve(user.stripe_subscription_id);
+      
+      // If subscription is active in Stripe but not in our DB, fix it
+      if (subscription.status === 'active' && user.subscription_tier !== 'pro') {
+        await query(
+          'UPDATE users SET subscription_tier = $1 WHERE id = $2',
+          ['pro', userId]
+        );
+        return {
+          tier: 'pro',
+          status: subscription.status,
+          current_period_end: new Date(subscription.current_period_end * 1000)
+        };
+      }
+      
       return {
         tier: user.subscription_tier,
         status: subscription.status,
         current_period_end: new Date(subscription.current_period_end * 1000)
       };
     } catch (error) {
-      console.error('Error retrieving subscription:', error);
+      console.error('Error retrieving subscription from Stripe:', error);
+      
+      // Only default to basic if we can't verify the subscription
+      if (user.subscription_tier === 'pro') {
+        // Log this as it shouldn't happen often
+        console.error('Pro user subscription verification failed:', {
+          userId,
+          stripe_subscription_id: user.stripe_subscription_id,
+          error: error.message
+        });
+      }
+      
       return {
-        tier: 'basic',
-        status: 'inactive',
-        current_period_end: null
+        tier: user.subscription_tier, // Keep existing tier instead of defaulting to basic
+        status: user.sub_status || 'unknown',
+        current_period_end: user.current_period_end
       };
     }
   }
 
+  // No subscription ID means basic tier
   return {
-    tier: user.subscription_tier,
+    tier: 'basic',
     status: 'inactive',
     current_period_end: null
   };
