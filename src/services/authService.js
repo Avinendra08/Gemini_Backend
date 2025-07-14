@@ -8,13 +8,13 @@ export const generateOTP = () => {
   return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
-// Store OTP in Redis with expiration
+//Store OTP in Redis with expiration
 export const storeOTP = async (mobileNumber, otp, type = 'login') => {
   const key = `otp:${mobileNumber}:${type}`;
   await cache.set(key, otp, 300); // 5 minutes expiration
 };
 
-// Verify OTP from Redis
+//Verify OTP from Redis
 export const verifyOTP = async (mobileNumber, otp, type = 'login') => {
   const key = `otp:${mobileNumber}:${type}`;
   const storedOTP = await cache.get(key);
@@ -23,12 +23,10 @@ export const verifyOTP = async (mobileNumber, otp, type = 'login') => {
     return false;
   }
   
-  // Delete OTP after successful verification
   await cache.del(key);
   return true;
 };
 
-// Hash password
 export const hashPassword = async (password) => {
   const saltRounds = 12;
   return await bcrypt.hash(password, saltRounds);
@@ -39,7 +37,6 @@ export const comparePassword = async (password, hash) => {
   return await bcrypt.compare(password, hash);
 };
 
-// Generate JWT token
 export const generateToken = (userId) => {
   return jwt.sign(
     { userId },
@@ -81,7 +78,7 @@ export const findUserById = async (userId) => {
   return result.rows[0];
 };
 
-// Update user password
+//Update user password
 export const updatePassword = async (userId, newPassword) => {
   const passwordHash = await hashPassword(newPassword);
   await query(
@@ -98,20 +95,13 @@ export const sendOTP = async (mobileNumber, type = 'login') => {
   return {
     success: true,
     message: `OTP sent to ${mobileNumber}`,
-    otp: otp, // In production, this would be sent via SMS
+    otp: otp,
     expires_in: 300
   };
 };
 
-// Verify OTP and login
-export const verifyLoginOTP = async (mobileNumber, otp, password) => {
-  // Verify OTP first
-  const isValid = await verifyOTP(mobileNumber, otp, 'login');
-  if (!isValid) {
-    throw new Error('Invalid OTP');
-  }
-
-  // Find user
+// Verify login
+export const verifyLoginPassword = async (mobileNumber,password) => {
   const user = await findUserByMobile(mobileNumber);
   if (!user) {
     throw new Error('User not found. Please sign up first.');
@@ -178,13 +168,11 @@ export const resetPassword = async (mobileNumber, otp, newPassword) => {
     throw new Error('Invalid OTP');
   }
 
-  // Find user
   const user = await findUserByMobile(mobileNumber);
   if (!user) {
     throw new Error('User not found with this mobile number');
   }
 
-  // Update password
   await updatePassword(user.id, newPassword);
   
   return {
@@ -222,7 +210,6 @@ export const changePassword = async (userId, currentPassword, newPassword) => {
   };
 };
 
-// Check if user exists and send OTP for signup
 export const checkUserAndSendSignupOTP = async (userData) => {
   const { mobile_number, email } = userData;
   

@@ -92,3 +92,5 @@ process.on('SIGINT', () => {
 });
 
 export default app;
+
+//deployed link :  https://gemini-backend-2-qjgx.onrender.com

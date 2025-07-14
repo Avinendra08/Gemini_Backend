@@ -1,7 +1,6 @@
 import { 
   sendOTP, 
-  verifySignupOTP, 
-  verifyLoginOTP, 
+  verifyLoginPassword, 
   resetPassword, 
   changePassword,
   checkUserAndSendSignupOTP,
@@ -25,21 +24,6 @@ export const sendSignupOTP = async (req, res) => {
   }
 };
 
-// Send OTP for login
-export const sendLoginOTP = async (req, res) => {
-  try {
-    const { mobile_number } = req.body;
-    
-    const result = await sendOTP(mobile_number, 'login');
-    
-    res.status(200).json(result);
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
-  }
-};
 
 // Verify OTP and complete signup
 export const verifySignupOTPController = async (req, res) => {
@@ -57,13 +41,13 @@ export const verifySignupOTPController = async (req, res) => {
   }
 };
 
-// Verify OTP and login
-export const verifyLoginOTPController = async (req, res) => {
+// Verify login
+export const verifyLoginPasswordController = async (req, res) => {
   try {
-    const { mobile_number, otp, password } = req.body;
-    
-    const result = await verifyLoginOTP(mobile_number, otp, password);
-    
+    const { mobile_number, password } = req.body;
+
+    const result = await verifyLoginPassword(mobile_number,password); 
+
     res.status(200).json(result);
   } catch (error) {
     res.status(400).json({
